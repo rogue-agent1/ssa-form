@@ -1,37 +1,72 @@
 #!/usr/bin/env python3
-"""SSA (Static Single Assignment) form converter."""
-class Instruction:
-    def __init__(self,op,dest=None,args=None):
-        self.op=op;self.dest=dest;self.args=args or []
-    def __repr__(self):
-        if self.dest: return f"{self.dest} = {self.op} {', '.join(str(a) for a in self.args)}"
-        return f"{self.op} {', '.join(str(a) for a in self.args)}"
-def to_ssa(instructions):
-    versions={};ssa=[]
-    def get_version(var):
-        return f"{var}_{versions.get(var,0)}"
-    def new_version(var):
-        versions[var]=versions.get(var,0)+1
-        return f"{var}_{versions[var]}"
-    for inst in instructions:
-        new_args=[get_version(a) if isinstance(a,str) and a.isalpha() else a for a in inst.args]
-        new_dest=new_version(inst.dest) if inst.dest else None
-        ssa.append(Instruction(inst.op,new_dest,new_args))
-    return ssa
-def from_ssa(instructions):
-    result=[]
-    for inst in instructions:
-        dest=inst.dest.rsplit("_",1)[0] if inst.dest else None
-        args=[a.rsplit("_",1)[0] if isinstance(a,str) and "_" in a else a for a in inst.args]
-        result.append(Instruction(inst.op,dest,args))
+"""SSA Form Converter - Convert basic block code to SSA form."""
+import sys, re
+from collections import defaultdict
+
+def parse_blocks(text):
+    blocks = {}; current = "entry"; blocks[current] = []
+    for line in text.strip().split("\n"):
+        line = line.strip()
+        if not line or line.startswith("#"): continue
+        if line.endswith(":"):
+            current = line[:-1]; blocks[current] = []
+        else:
+            blocks[current].append(line)
+    return blocks
+
+def get_vars(blocks):
+    defs = defaultdict(set); uses = defaultdict(set)
+    for label, instrs in blocks.items():
+        for instr in instrs:
+            m = re.match(r"(\w+)\s*=\s*(.*)", instr)
+            if m:
+                defs[label].add(m.group(1))
+                for v in re.findall(r"[a-zA-Z_]\w*", m.group(2)):
+                    uses[label].add(v)
+            elif instr.startswith("if ") or instr.startswith("goto "):
+                for v in re.findall(r"[a-zA-Z_]\w*", instr):
+                    if v not in ("if", "goto", "then"): uses[label].add(v)
+    return defs, uses
+
+def to_ssa(blocks):
+    counters = defaultdict(int)
+    stacks = defaultdict(list)
+    result = {}
+    def rename(var):
+        counters[var] += 1
+        name = f"{var}_{counters[var]}"
+        stacks[var].append(name)
+        return name
+    def current(var):
+        return stacks[var][-1] if stacks[var] else f"{var}_0"
+    for label, instrs in blocks.items():
+        new_instrs = []
+        for instr in instrs:
+            m = re.match(r"(\w+)\s*=\s*(.*)", instr)
+            if m:
+                var, expr = m.group(1), m.group(2)
+                new_expr = re.sub(r"[a-zA-Z_]\w*", lambda m2: current(m2.group()) if m2.group() != var else m2.group(), expr)
+                new_var = rename(var)
+                new_instrs.append(f"{new_var} = {new_expr}")
+            else:
+                new_instrs.append(instr)
+        result[label] = new_instrs
     return result
-if __name__=="__main__":
-    code=[Instruction("assign","x",[1]),Instruction("add","y",["x",2]),
-        Instruction("assign","x",[3]),Instruction("add","z",["x","y"])]
-    ssa=to_ssa(code)
-    for i in ssa: print(i)
-    assert "x_1" in str(ssa[0]) and "x_2" in str(ssa[2])
-    back=from_ssa(ssa)
-    print("\nBack from SSA:")
-    for i in back: print(i)
-    print("SSA form OK")
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: ssa_form.py <file>"); print("Format: label: / x = expr / if cond goto label"); sys.exit(1)
+    with open(sys.argv[1]) as f:
+        blocks = parse_blocks(f.read())
+    print("=== Original ===")
+    for label, instrs in blocks.items():
+        print(f"{label}:")
+        for i in instrs: print(f"  {i}")
+    ssa = to_ssa(blocks)
+    print("\n=== SSA Form ===")
+    for label, instrs in ssa.items():
+        print(f"{label}:")
+        for i in instrs: print(f"  {i}")
+
+if __name__ == "__main__":
+    main()

@@ -1,11 +1,11 @@
-# Ssa Form
+# ssa-form
 
-SSA (Static Single Assignment) form converter.
+Static Single Assignment Converter. Zero-dependency, single-file Python CLI.
 
 ## Usage
 
 ```bash
-python3 ssa_form.py
+python3 ssa_form.py --help
 ```
 
 ## License

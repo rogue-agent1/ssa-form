@@ -1,72 +1,67 @@
 #!/usr/bin/env python3
-"""SSA Form Converter - Convert basic block code to SSA form."""
-import sys, re
+"""ssa_form - Static Single Assignment form transformation."""
+import argparse
 from collections import defaultdict
 
-def parse_blocks(text):
-    blocks = {}; current = "entry"; blocks[current] = []
-    for line in text.strip().split("\n"):
-        line = line.strip()
-        if not line or line.startswith("#"): continue
-        if line.endswith(":"):
-            current = line[:-1]; blocks[current] = []
-        else:
-            blocks[current].append(line)
-    return blocks
+class Instruction:
+    def __init__(self, op, dest=None, args=None):
+        self.op,self.dest,self.args=op,dest,args or []
+    def __repr__(self):
+        if self.dest: return f"{self.dest} = {self.op} {' '.join(str(a) for a in self.args)}"
+        return f"{self.op} {' '.join(str(a) for a in self.args)}"
 
-def get_vars(blocks):
-    defs = defaultdict(set); uses = defaultdict(set)
-    for label, instrs in blocks.items():
-        for instr in instrs:
-            m = re.match(r"(\w+)\s*=\s*(.*)", instr)
-            if m:
-                defs[label].add(m.group(1))
-                for v in re.findall(r"[a-zA-Z_]\w*", m.group(2)):
-                    uses[label].add(v)
-            elif instr.startswith("if ") or instr.startswith("goto "):
-                for v in re.findall(r"[a-zA-Z_]\w*", instr):
-                    if v not in ("if", "goto", "then"): uses[label].add(v)
-    return defs, uses
+class BasicBlock:
+    def __init__(self, label): self.label=label;self.instrs=[];self.succs=[];self.preds=[]
+    def add(self, instr): self.instrs.append(instr)
 
-def to_ssa(blocks):
-    counters = defaultdict(int)
-    stacks = defaultdict(list)
-    result = {}
-    def rename(var):
-        counters[var] += 1
-        name = f"{var}_{counters[var]}"
-        stacks[var].append(name)
-        return name
-    def current(var):
-        return stacks[var][-1] if stacks[var] else f"{var}_0"
-    for label, instrs in blocks.items():
-        new_instrs = []
-        for instr in instrs:
-            m = re.match(r"(\w+)\s*=\s*(.*)", instr)
-            if m:
-                var, expr = m.group(1), m.group(2)
-                new_expr = re.sub(r"[a-zA-Z_]\w*", lambda m2: current(m2.group()) if m2.group() != var else m2.group(), expr)
-                new_var = rename(var)
-                new_instrs.append(f"{new_var} = {new_expr}")
-            else:
-                new_instrs.append(instr)
-        result[label] = new_instrs
-    return result
+class SSAConverter:
+    def __init__(self): self.counters=defaultdict(int);self.stacks=defaultdict(list)
+    def fresh(self, var):
+        self.counters[var]+=1;name=f"{var}.{self.counters[var]}"
+        self.stacks[var].append(name);return name
+    def current(self, var):
+        if self.stacks[var]: return self.stacks[var][-1]
+        return self.fresh(var)
+    def convert_block(self, block):
+        new_instrs=[]
+        for instr in block.instrs:
+            new_args=[self.current(a) if isinstance(a,str) and not a.startswith('#') else a for a in instr.args]
+            new_dest=self.fresh(instr.dest) if instr.dest else None
+            new_instrs.append(Instruction(instr.op,new_dest,new_args))
+        block.instrs=new_instrs
+    def insert_phi(self, block, var, preds):
+        args=[]
+        for p in preds:
+            if self.stacks[var]: args.append(f"{self.stacks[var][-1]}({p.label})")
+            else: args.append(f"undef({p.label})")
+        dest=self.fresh(var)
+        phi=Instruction("phi",dest,args)
+        block.instrs.insert(0,phi)
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: ssa_form.py <file>"); print("Format: label: / x = expr / if cond goto label"); sys.exit(1)
-    with open(sys.argv[1]) as f:
-        blocks = parse_blocks(f.read())
-    print("=== Original ===")
-    for label, instrs in blocks.items():
-        print(f"{label}:")
-        for i in instrs: print(f"  {i}")
-    ssa = to_ssa(blocks)
-    print("\n=== SSA Form ===")
-    for label, instrs in ssa.items():
-        print(f"{label}:")
-        for i in instrs: print(f"  {i}")
+    p=argparse.ArgumentParser(description="SSA form transformation");args=p.parse_args()
+    entry=BasicBlock("entry"); loop=BasicBlock("loop"); exit_=BasicBlock("exit")
+    entry.add(Instruction("const","x",["#0"]));entry.add(Instruction("const","n",["#10"]))
+    entry.add(Instruction("br",None,["loop"]));entry.succs=[loop];loop.preds=[entry]
+    loop.add(Instruction("add","x",["x","#1"]));loop.add(Instruction("sub","n",["n","#1"]))
+    loop.add(Instruction("cmp","c",["n","#0"]));loop.add(Instruction("br_if",None,["c","loop","exit"]))
+    loop.succs=[loop,exit_];loop.preds.append(loop);exit_.preds=[loop]
+    exit_.add(Instruction("ret",None,["x"]))
+    blocks=[entry,loop,exit_]
+    print("=== Before SSA ===")
+    for b in blocks:
+        print(f"  {b.label}:");
+        for i in b.instrs: print(f"    {i}")
+    conv=SSAConverter()
+    phi_vars={"x","n"}
+    for b in blocks:
+        if len(b.preds)>1:
+            for v in phi_vars: conv.insert_phi(b,v,b.preds)
+        conv.convert_block(b)
+    print("\n=== After SSA ===")
+    for b in blocks:
+        print(f"  {b.label}:");
+        for i in b.instrs: print(f"    {i}")
 
-if __name__ == "__main__":
+if __name__=="__main__":
     main()
